@@ -19,7 +19,10 @@ RUN pip install --no-cache-dir \
     python-dotenv==1.0.1 \
     apscheduler==3.11.0
 
-COPY . .
+COPY app/ ./app/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
+COPY scripts/ ./scripts/
 
 ENV PYTHONPATH=/app
 
