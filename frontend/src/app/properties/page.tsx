@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { Suspense, useState, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import { useQuery } from "@tanstack/react-query";
@@ -27,6 +27,14 @@ const PropertyMap = dynamic(() => import("@/components/Map/PropertyMap"), {
 });
 
 export default function PropertiesPage() {
+  return (
+    <Suspense fallback={<Container maxWidth="xl" sx={{ py: 3 }}><Skeleton variant="rectangular" height={400} /></Container>}>
+      <PropertiesContent />
+    </Suspense>
+  );
+}
+
+function PropertiesContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [viewMode, setViewMode] = useState<"list" | "map" | "split">("split");
