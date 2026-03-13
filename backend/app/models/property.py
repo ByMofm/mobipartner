@@ -22,7 +22,7 @@ from app.models.enums import PropertyType, ListingType, CurrencyType, SourceType
 
 def _enum_values(enum_cls):
     """Return enum values (not names) for SQLAlchemy Enum columns."""
-    return lambda: [e.value for e in enum_cls]
+    return lambda _cls: [e.value for e in enum_cls]
 
 
 class Property(Base):
