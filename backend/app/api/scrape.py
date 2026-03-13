@@ -1,5 +1,4 @@
 import asyncio
-import subprocess
 import unicodedata
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -22,6 +21,9 @@ router = APIRouter()
 
 @router.post("/trigger/{source}")
 def trigger_scrape(source: SourceType):
+    """Trigger the scrape workflow on GitHub Actions."""
+    from app.scheduler import trigger_github_workflow
+
     spider_map = {
         SourceType.ZONAPROP: "zonaprop",
         SourceType.ARGENPROP: "argenprop",
@@ -32,26 +34,9 @@ def trigger_scrape(source: SourceType):
     if not spider_name:
         raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
 
-    import os
-    scrapers_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "scrapers")
-    if not os.path.isdir(scrapers_dir):
-        raise HTTPException(
-            status_code=501,
-            detail="Scrapers not available in this deployment. Use GitHub Actions to run scrapes.",
-        )
-
     try:
-        process = subprocess.Popen(
-            ["python", "-m", "scrapy", "crawl", spider_name],
-            cwd=scrapers_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        return {
-            "status": "started",
-            "spider": spider_name,
-            "pid": process.pid,
-        }
+        result = trigger_github_workflow()
+        return {"status": "triggered", "spider": spider_name, **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

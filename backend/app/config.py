@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     admin_api_key: str = ""
     cors_origins: str = "http://localhost:3000"
 
+    # GitHub (for triggering Actions workflows)
+    github_token: str = ""
+    github_repo: str = "ByMofm/mobipartner"
+
     # Ollama image analysis
     ollama_url: str = "http://ollama:11434"
     image_analysis_enabled: bool = False

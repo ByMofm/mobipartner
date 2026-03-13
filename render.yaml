@@ -17,8 +17,10 @@ services:
         sync: false
       - key: CORS_ORIGINS
         sync: false
+      - key: GITHUB_TOKEN
+        sync: false
       - key: SCRAPE_ENABLED
-        value: "false"
+        value: "true"
       - key: DEBUG
         value: "false"
       - key: USD_ARS_RATE_FALLBACK

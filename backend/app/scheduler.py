@@ -1,9 +1,9 @@
-import asyncio
 import json
 import logging
-import subprocess
+import unicodedata
 from datetime import datetime, timezone
 
+import httpx
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -20,8 +20,6 @@ pipeline_state: dict = {
 }
 
 _scheduler: BackgroundScheduler | None = None
-
-SPIDERS = ["zonaprop", "argenprop", "mercadolibre"]
 
 
 def _step(name: str, fn):
@@ -40,33 +38,46 @@ def _step(name: str, fn):
     pipeline_state["last_run_steps"].append(entry)
 
 
+def trigger_github_workflow():
+    """Trigger the Daily Scrape Pipeline workflow on GitHub Actions."""
+    if not settings.github_token:
+        raise RuntimeError("GITHUB_TOKEN not configured — cannot trigger GitHub Actions")
+
+    url = f"https://api.github.com/repos/{settings.github_repo}/actions/workflows/scrape.yml/dispatches"
+    resp = httpx.post(
+        url,
+        json={"ref": "master"},
+        headers={
+            "Authorization": f"Bearer {settings.github_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return {"status": "triggered", "github_status": resp.status_code}
+
+
 def run_pipeline():
-    """Full daily pipeline: scrape all sources → post-process → score → dedup."""
+    """Full daily pipeline: trigger scraping via GitHub Actions, then run post-processing locally."""
     from app.database import SessionLocal
     from app.services.pricing import compute_all_scores
     from app.services.dedup import run_dedup_pass
     from app.utils.currency import get_usd_ars_blue_rate_sync
     from app.models.location import Location
     from app.models.property import Property, PropertyListing
-    from sqlalchemy import or_
-    import unicodedata
 
     pipeline_state["last_run_at"] = datetime.now(timezone.utc).isoformat()
     pipeline_state["last_run_status"] = "running"
     pipeline_state["last_run_steps"] = []
     logger.info("=== Daily pipeline started ===")
 
-    # 1. Scrape each spider sequentially (wait for completion)
-    for spider in SPIDERS:
-        def _scrape(s=spider):
-            proc = subprocess.run(
-                ["python", "-m", "scrapy", "crawl", s],
-                cwd="/app/scrapers",
-                capture_output=True,
-                timeout=7200,  # 2h max per spider
-            )
-            return {"exit_code": proc.returncode, "spider": s}
-        _step(f"scrape_{spider}", _scrape)
+    # 1. Trigger GitHub Actions scrape workflow
+    _step("trigger_scrape_workflow", trigger_github_workflow)
+
+    # Note: scraping runs async on GitHub Actions.
+    # Post-processing steps below work on whatever data is already in the DB.
+    # GitHub Actions also runs post-processing after scraping completes.
 
     db = SessionLocal()
     try:
@@ -118,20 +129,13 @@ def run_pipeline():
             return {"assigned": assigned}
         _step("assign_locations", _assign_locations)
 
-        # 4. Geocode missing coordinates (up to 200 per run to stay within rate limit)
-        def _geocode():
-            from app.services.geocoding import geocode_batch
-            result = asyncio.run(geocode_batch(db, batch_size=200))
-            return result
-        _step("geocode", _geocode)
-
-        # 5. Compute USD prices and scores
+        # 4. Compute USD prices and scores
         def _score():
             rate = get_usd_ars_blue_rate_sync(fallback=settings.usd_ars_rate_fallback)
             return compute_all_scores(db, rate)
         _step("score", _score)
 
-        # 6. Dedup
+        # 5. Dedup
         def _dedup():
             return run_dedup_pass(db)
         _step("dedup", _dedup)
