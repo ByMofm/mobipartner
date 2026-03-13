@@ -32,10 +32,18 @@ def trigger_scrape(source: SourceType):
     if not spider_name:
         raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
 
+    import os
+    scrapers_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "scrapers")
+    if not os.path.isdir(scrapers_dir):
+        raise HTTPException(
+            status_code=501,
+            detail="Scrapers not available in this deployment. Use GitHub Actions to run scrapes.",
+        )
+
     try:
         process = subprocess.Popen(
             ["python", "-m", "scrapy", "crawl", spider_name],
-            cwd="/app/scrapers",
+            cwd=scrapers_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
