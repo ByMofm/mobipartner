@@ -5,7 +5,7 @@ const AUTH_SECRET = new TextEncoder().encode(
   process.env.AUTH_SECRET || "dev-secret-change-in-production"
 );
 
-const PUBLIC_PATHS = ["/login", "/api/auth", "/_next", "/favicon.ico"];
+const PUBLIC_PATHS = ["/login", "/api/auth", "/api/proxy", "/_next", "/favicon.ico"];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
