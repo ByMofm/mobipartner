@@ -26,7 +26,7 @@ class Property(Base):
     id = Column(Integer, primary_key=True)
 
     # Classification
-    property_type = Column(Enum(PropertyType), nullable=False)
+    property_type = Column(Enum(PropertyType, create_type=False), nullable=False)
     listing_type = Column(Enum(ListingType), nullable=False)
 
     # Location

@@ -7,16 +7,22 @@ import {
   StatsOverview,
 } from "./types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
-const API_KEY = process.env.API_KEY || process.env.NEXT_PUBLIC_API_KEY || "";
+// In production, API calls go through the Next.js proxy (/api/proxy/*)
+// which adds the API key server-side, keeping it secret from the browser.
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "/api/proxy";
 
-function authHeaders(): Record<string, string> {
-  if (!API_KEY) return {};
-  return { "X-API-Key": API_KEY };
+function buildUrl(path: string): URL {
+  const full = `${API_URL}${path}`;
+  // Relative URLs (e.g. /api/proxy/...) need a base when running in the browser
+  if (full.startsWith("/")) {
+    const base = typeof window !== "undefined" ? window.location.origin : "http://localhost:3000";
+    return new URL(full, base);
+  }
+  return new URL(full);
 }
 
 async function fetchApi<T>(path: string, params?: Record<string, string | string[]>): Promise<T> {
-  const url = new URL(`${API_URL}${path}`);
+  const url = buildUrl(path);
   if (params) {
     Object.entries(params).forEach(([key, value]) => {
       if (value === undefined || value === "") return;
@@ -28,7 +34,7 @@ async function fetchApi<T>(path: string, params?: Record<string, string | string
     });
   }
 
-  const res = await fetch(url.toString(), { headers: authHeaders() });
+  const res = await fetch(url.toString(), { headers: {} });
   if (!res.ok) {
     throw new Error(`API error: ${res.status} ${res.statusText}`);
   }
@@ -80,13 +86,13 @@ export async function getStatsOverview(): Promise<StatsOverview> {
 }
 
 async function postApi<T>(path: string, params?: Record<string, string>): Promise<T> {
-  const url = new URL(`${API_URL}${path}`);
+  const url = buildUrl(path);
   if (params) {
     Object.entries(params).forEach(([key, value]) => {
       if (value !== undefined && value !== "") url.searchParams.set(key, value);
     });
   }
-  const res = await fetch(url.toString(), { method: "POST", headers: authHeaders() });
+  const res = await fetch(url.toString(), { method: "POST", headers: {} });
   if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
   return res.json();
 }
