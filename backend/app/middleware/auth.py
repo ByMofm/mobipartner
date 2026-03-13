@@ -7,12 +7,15 @@ _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 async def verify_api_key(api_key: str | None = Security(_api_key_header)):
-    """Validate X-API-Key header against settings.api_key.
+    """Validate X-API-Key header against settings.api_key or admin_api_key.
     If api_key is not configured (empty), auth is disabled (dev mode).
     """
     if not settings.api_key:
         return  # auth disabled in dev
-    if not api_key or api_key != settings.api_key:
+    valid_keys = {settings.api_key}
+    if settings.admin_api_key:
+        valid_keys.add(settings.admin_api_key)
+    if not api_key or api_key not in valid_keys:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
