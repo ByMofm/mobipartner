@@ -20,14 +20,19 @@ from app.database import Base
 from app.models.enums import PropertyType, ListingType, CurrencyType, SourceType
 
 
+def _enum_values(enum_cls):
+    """Return enum values (not names) for SQLAlchemy Enum columns."""
+    return lambda: [e.value for e in enum_cls]
+
+
 class Property(Base):
     __tablename__ = "properties"
 
     id = Column(Integer, primary_key=True)
 
     # Classification
-    property_type = Column(Enum(PropertyType, create_type=False), nullable=False)
-    listing_type = Column(Enum(ListingType), nullable=False)
+    property_type = Column(Enum(PropertyType, values_callable=_enum_values(PropertyType), create_type=False), nullable=False)
+    listing_type = Column(Enum(ListingType, values_callable=_enum_values(ListingType), create_type=False), nullable=False)
 
     # Location
     location_id = Column(Integer, ForeignKey("locations.id"), nullable=True)
@@ -39,7 +44,7 @@ class Property(Base):
 
     # Current price (denormalized)
     current_price = Column(Float, nullable=True)
-    current_currency = Column(Enum(CurrencyType), nullable=True)
+    current_currency = Column(Enum(CurrencyType, values_callable=_enum_values(CurrencyType), create_type=False), nullable=True)
     current_price_usd = Column(Float, nullable=True)
 
     # Features
@@ -91,14 +96,14 @@ class PropertyListing(Base):
 
     id = Column(Integer, primary_key=True)
     property_id = Column(Integer, ForeignKey("properties.id"), nullable=True)
-    source = Column(Enum(SourceType), nullable=False)
+    source = Column(Enum(SourceType, values_callable=_enum_values(SourceType), create_type=False), nullable=False)
     source_url = Column(String(1000), nullable=False)
     source_id = Column(String(255), nullable=False)
 
     original_title = Column(String(500), nullable=True)
     original_address = Column(String(500), nullable=True)
     original_price = Column(Float, nullable=True)
-    original_currency = Column(Enum(CurrencyType), nullable=True)
+    original_currency = Column(Enum(CurrencyType, values_callable=_enum_values(CurrencyType), create_type=False), nullable=True)
 
     image_urls = Column(ARRAY(Text), default=[])
     raw_data = Column(JSONB, nullable=True)
@@ -119,7 +124,7 @@ class PriceHistory(Base):
     property_listing_id = Column(Integer, ForeignKey("property_listings.id"), nullable=False)
     property_id = Column(Integer, ForeignKey("properties.id"), nullable=False)
     price = Column(Float, nullable=False)
-    currency = Column(Enum(CurrencyType), nullable=False)
+    currency = Column(Enum(CurrencyType, values_callable=_enum_values(CurrencyType), create_type=False), nullable=False)
     price_usd = Column(Float, nullable=True)
     usd_ars_rate = Column(Float, nullable=True)
     scraped_at = Column(DateTime, default=datetime.utcnow)
@@ -133,7 +138,7 @@ class ScrapeRun(Base):
     __tablename__ = "scrape_runs"
 
     id = Column(Integer, primary_key=True)
-    source = Column(Enum(SourceType), nullable=False)
+    source = Column(Enum(SourceType, values_callable=_enum_values(SourceType), create_type=False), nullable=False)
     started_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
     items_found = Column(Integer, default=0)
