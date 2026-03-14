@@ -95,10 +95,126 @@ jobs:
           PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
         run: python -m scrapy crawl mercadolibre
 
+  scrape-inmoclick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies (no Playwright)
+        run: pip install -r backend/requirements.txt
+
+      - name: Run InmoClick spider
+        working-directory: backend/scrapers
+        env:
+          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
+        run: python -m scrapy crawl inmoclick
+
+  scrape-guzman-guzman:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-firefox-${{ runner.os }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          playwright install firefox --with-deps
+
+      - name: Run Guzmán & Guzmán spider
+        working-directory: backend/scrapers
+        env:
+          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
+        run: python -m scrapy crawl guzman_guzman
+
+  scrape-tucumanpropiedades:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-firefox-${{ runner.os }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          playwright install firefox --with-deps
+
+      - name: Run Tucumán Propiedades spider
+        working-directory: backend/scrapers
+        env:
+          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
+        run: python -m scrapy crawl tucumanpropiedades
+
+  scrape-garcia-pinto:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies (no Playwright)
+        run: pip install -r backend/requirements.txt
+
+      - name: Run García Pinto spider
+        working-directory: backend/scrapers
+        env:
+          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
+        run: python -m scrapy crawl garcia_pinto
+
+  scrape-lima-inmobiliaria:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies (no Playwright)
+        run: pip install -r backend/requirements.txt
+
+      - name: Run Lima Inmobiliaria spider
+        working-directory: backend/scrapers
+        env:
+          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
+        run: python -m scrapy crawl lima_inmobiliaria
+
   post-process:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [scrape-zonaprop, scrape-argenprop, scrape-mercadolibre]
+    needs: [scrape-zonaprop, scrape-argenprop, scrape-mercadolibre, scrape-inmoclick, scrape-guzman-guzman, scrape-tucumanpropiedades, scrape-garcia-pinto, scrape-lima-inmobiliaria]
     steps:
       - uses: actions/checkout@v4
 

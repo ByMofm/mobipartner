@@ -28,6 +28,11 @@ def trigger_scrape(source: SourceType):
         SourceType.ZONAPROP: "zonaprop",
         SourceType.ARGENPROP: "argenprop",
         SourceType.MERCADOLIBRE: "mercadolibre",
+        SourceType.INMOCLICK: "inmoclick",
+        SourceType.GUZMAN_GUZMAN: "guzman_guzman",
+        SourceType.TUCUMANPROPIEDADES: "tucumanpropiedades",
+        SourceType.GARCIA_PINTO: "garcia_pinto",
+        SourceType.LIMA_INMOBILIARIA: "lima_inmobiliaria",
     }
 
     spider_name = spider_map.get(source)

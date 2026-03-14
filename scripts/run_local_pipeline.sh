@@ -37,7 +37,7 @@ fi
 
 export PYTHONPATH="$BACKEND_DIR"
 
-SPIDERS=("zonaprop" "argenprop" "mercadolibre")
+SPIDERS=("zonaprop" "argenprop" "mercadolibre" "inmoclick" "guzman_guzman" "tucumanpropiedades" "garcia_pinto" "lima_inmobiliaria")
 
 # If a specific spider was requested
 if [ "${1:-}" != "" ]; then

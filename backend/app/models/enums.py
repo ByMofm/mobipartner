@@ -27,3 +27,8 @@ class SourceType(str, enum.Enum):
     ZONAPROP = "zonaprop"
     ARGENPROP = "argenprop"
     MERCADOLIBRE = "mercadolibre"
+    INMOCLICK = "inmoclick"
+    GUZMAN_GUZMAN = "guzman_guzman"
+    TUCUMANPROPIEDADES = "tucumanpropiedades"
+    GARCIA_PINTO = "garcia_pinto"
+    LIMA_INMOBILIARIA = "lima_inmobiliaria"
