@@ -49,12 +49,12 @@ def step(name: str, fn):
 
 
 def main():
-    db = SessionLocal()
     errors = 0
 
-    try:
-        # 1. Backfill apto_credito
-        def backfill():
+    # 1. Backfill apto_credito
+    def backfill():
+        db = SessionLocal()
+        try:
             KEYWORDS = ["apto-credito", "apto_credito", "crédito", "credito", "hipotecario"]
             all_listings = db.query(PropertyListing).all()
             to_flag = set()
@@ -73,12 +73,16 @@ def main():
                     updated += 1
             db.commit()
             return {"updated": updated}
+        finally:
+            db.close()
 
-        if not step("backfill_apto_credito", backfill):
-            errors += 1
+    if not step("backfill_apto_credito", backfill):
+        errors += 1
 
-        # 2. Assign locations
-        def assign_locations():
+    # 2. Assign locations
+    def assign_locations():
+        db = SessionLocal()
+        try:
             LEVEL_ORDER = {"barrio": 0, "ciudad": 1, "departamento": 2, "provincia": 3}
             locations = sorted(db.query(Location).all(), key=lambda l: LEVEL_ORDER.get(l.level, 9))
             props = db.query(Property).filter(Property.is_active == True, Property.address.isnot(None)).all()
@@ -95,34 +99,45 @@ def main():
                         break
             db.commit()
             return {"assigned": assigned}
+        finally:
+            db.close()
 
-        if not step("assign_locations", assign_locations):
-            errors += 1
+    if not step("assign_locations", assign_locations):
+        errors += 1
 
-        # 3. Geocode
-        def geocode():
+    # 3. Geocode
+    def geocode():
+        db = SessionLocal()
+        try:
             return asyncio.run(geocode_batch(db, batch_size=200))
+        finally:
+            db.close()
 
-        if not step("geocode", geocode):
-            errors += 1
+    if not step("geocode", geocode):
+        errors += 1
 
-        # 4. Score
-        def score():
+    # 4. Score
+    def score():
+        db = SessionLocal()
+        try:
             rate = get_usd_ars_blue_rate_sync(fallback=settings.usd_ars_rate_fallback)
             return compute_all_scores(db, rate)
+        finally:
+            db.close()
 
-        if not step("score", score):
-            errors += 1
+    if not step("score", score):
+        errors += 1
 
-        # 5. Dedup
-        def dedup():
+    # 5. Dedup
+    def dedup():
+        db = SessionLocal()
+        try:
             return run_dedup_pass(db)
+        finally:
+            db.close()
 
-        if not step("dedup", dedup):
-            errors += 1
-
-    finally:
-        db.close()
+    if not step("dedup", dedup):
+        errors += 1
 
     if errors:
         logger.warning(f"[postprocess] finished with {errors} error(s)")
