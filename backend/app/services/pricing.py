@@ -1,13 +1,17 @@
 import logging
+from collections import defaultdict
+from statistics import median as _median
 
-from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
+from app.models.location import Location
 from app.models.property import Property, PriceHistory
 from app.models.enums import CurrencyType
 from app.utils.currency import convert_to_usd
 
 logger = logging.getLogger(__name__)
+
+MIN_COMPARABLES = 5
 
 
 def compute_all_scores(db: Session, usd_ars_rate: float) -> dict:
@@ -95,55 +99,172 @@ def _invalidate_bad_prices(db: Session) -> int:
 
 
 def _score_properties(db: Session) -> int:
-    """Score properties by current_price_usd percentile within their group.
+    """Score properties by price_per_m2_usd vs median of similar properties.
 
-    Groups by (property_type, listing_type). Min 5 comparables required.
-    Only properties with valid prices (above MIN_VALID_PRICE_USD) are scored.
+    Uses location cascade: barrio -> ciudad -> departamento -> global.
+    Falls back to simple price percentile for properties without area data.
     """
-    props = (
+    # Load location hierarchy
+    all_locations = {loc.id: loc for loc in db.query(Location).all()}
+
+    # Properties with price_per_m2 (primary scoring)
+    props_with_m2 = (
         db.query(Property)
         .filter(
             Property.is_active == True,
-            Property.current_price_usd.isnot(None),
+            Property.price_per_m2_usd.isnot(None),
+            Property.price_per_m2_usd > 0,
         )
         .all()
     )
 
-    # Group by (property_type, listing_type), only valid prices
-    groups: dict[tuple, list[Property]] = {}
-    invalid_props = []
-    for p in props:
-        min_price = MIN_VALID_PRICE_USD.get(p.listing_type.value, 0)
-        if p.current_price_usd is None or p.current_price_usd < min_price:
-            invalid_props.append(p)
-        else:
-            key = (p.property_type, p.listing_type)
-            groups.setdefault(key, []).append(p)
-
-    # Clear scores for properties with invalid prices
-    for p in invalid_props:
-        p.price_score = None
+    # Properties with price but no area (fallback scoring)
+    props_no_m2 = (
+        db.query(Property)
+        .filter(
+            Property.is_active == True,
+            Property.current_price_usd.isnot(None),
+            Property.price_per_m2_usd.is_(None),
+        )
+        .all()
+    )
 
     scored = 0
-    for key, members in groups.items():
-        if len(members) < 5:
+
+    # --- Primary: price/m2 vs median with location cascade ---
+    type_groups: dict[tuple, list[Property]] = defaultdict(list)
+    for p in props_with_m2:
+        key = (p.property_type, p.listing_type)
+        type_groups[key].append(p)
+
+    for (ptype, ltype), members in type_groups.items():
+        # Build location-based sub-groups for this type
+        loc_prices: dict[int, list[float]] = defaultdict(list)
+        for p in members:
+            if p.location_id:
+                loc_prices[p.location_id].append(p.price_per_m2_usd)
+
+        all_prices = [p.price_per_m2_usd for p in members]
+
+        for p in members:
+            comparables, scope = _find_comparables(
+                p, loc_prices, all_locations, all_prices
+            )
+
+            if len(comparables) < MIN_COMPARABLES:
+                p.price_score = None
+                p.score_median_per_m2 = None
+                p.score_num_comparables = None
+                p.score_comparison_scope = None
+                continue
+
+            med = _median(comparables)
+
+            if med > 0:
+                ratio = (med - p.price_per_m2_usd) / med
+            else:
+                ratio = 0
+
+            # Map: -0.5 (50% above median) -> 1, 0 (at median) -> 50, +0.5 (50% below) -> 100
+            score = 50 + ratio * 100
+            score = max(1, min(100, round(score)))
+
+            p.price_score = score
+            p.score_median_per_m2 = round(med, 2)
+            p.score_num_comparables = len(comparables)
+            p.score_comparison_scope = scope
+            scored += 1
+
+    # --- Fallback: simple price percentile for properties without area ---
+    fallback_groups: dict[tuple, list[Property]] = defaultdict(list)
+    for p in props_no_m2:
+        min_price = MIN_VALID_PRICE_USD.get(p.listing_type.value, 0)
+        if p.current_price_usd >= min_price:
+            key = (p.property_type, p.listing_type)
+            fallback_groups[key].append(p)
+        else:
+            p.price_score = None
+
+    for key, members in fallback_groups.items():
+        if len(members) < MIN_COMPARABLES:
             for p in members:
                 p.price_score = None
             continue
 
         values = sorted([p.current_price_usd for p in members])
         total = len(values)
-
         for p in members:
             count_le = sum(1 for v in values if v <= p.current_price_usd)
             percentile = count_le / total
-            # Low percentile (cheap) = high score (good price)
             score = round((1 - percentile) * 100)
             p.price_score = max(1, min(100, score))
+            p.score_median_per_m2 = None
+            p.score_num_comparables = total
+            p.score_comparison_scope = "tipo_global"
             scored += 1
 
-    logger.info(f"Scored {scored} properties across {len(groups)} groups ({len(invalid_props)} with invalid prices skipped)")
+    logger.info(f"Scored {scored} properties ({len(props_with_m2)} with m2, {len(props_no_m2)} fallback)")
     return scored
+
+
+def _find_comparables(
+    prop: Property,
+    loc_prices: dict[int, list[float]],
+    all_locations: dict[int, Location],
+    all_prices: list[float],
+) -> tuple[list[float], str]:
+    """Find comparison prices using location cascade: barrio -> ciudad -> departamento -> global."""
+
+    # Try exact location (barrio)
+    if prop.location_id and prop.location_id in loc_prices:
+        prices = loc_prices[prop.location_id]
+        if len(prices) >= MIN_COMPARABLES:
+            return prices, "barrio"
+
+    # Try parent location (ciudad) — collect all sibling barrios
+    if prop.location_id and prop.location_id in all_locations:
+        parent_id = all_locations[prop.location_id].parent_id
+        if parent_id:
+            child_ids = [
+                lid for lid, loc in all_locations.items()
+                if loc.parent_id == parent_id
+            ]
+            child_ids.append(parent_id)
+            prices = []
+            for lid in child_ids:
+                prices.extend(loc_prices.get(lid, []))
+            if len(prices) >= MIN_COMPARABLES:
+                return prices, "ciudad"
+
+            # Try grandparent (departamento)
+            if parent_id in all_locations:
+                gp_id = all_locations[parent_id].parent_id
+                if gp_id:
+                    desc_ids = _collect_descendants(gp_id, all_locations)
+                    prices = []
+                    for lid in desc_ids:
+                        prices.extend(loc_prices.get(lid, []))
+                    if len(prices) >= MIN_COMPARABLES:
+                        return prices, "departamento"
+
+    # Global fallback
+    if len(all_prices) >= MIN_COMPARABLES:
+        return all_prices, "tipo_global"
+
+    return [], "none"
+
+
+def _collect_descendants(parent_id: int, all_locations: dict[int, Location]) -> list[int]:
+    """Collect all descendant location IDs (including the parent itself)."""
+    result = [parent_id]
+    queue = [parent_id]
+    while queue:
+        current = queue.pop()
+        for lid, loc in all_locations.items():
+            if loc.parent_id == current and lid not in result:
+                result.append(lid)
+                queue.append(lid)
+    return result
 
 
 def compute_overall_scores(db: Session) -> int:
@@ -192,20 +313,30 @@ def get_price_context(db: Session, property_id: int) -> dict | None:
     )
 
     values = sorted([r[0] for r in peers])
-    if len(values) < 5:
+    if len(values) < MIN_COMPARABLES:
         return None
 
     mid = len(values) // 2
-    median = values[mid] if len(values) % 2 == 1 else round((values[mid - 1] + values[mid]) / 2, 2)
+    median_price = values[mid] if len(values) % 2 == 1 else round((values[mid - 1] + values[mid]) / 2, 2)
+
+    # Percent vs median for price/m2
+    pct_vs_median = None
+    if prop.score_median_per_m2 and prop.price_per_m2_usd and prop.score_median_per_m2 > 0:
+        pct_vs_median = round(
+            (prop.price_per_m2_usd - prop.score_median_per_m2) / prop.score_median_per_m2 * 100, 1
+        )
 
     return {
         "price_usd": round(prop.current_price_usd, 0),
-        "median_usd": round(median, 0),
+        "median_usd": round(median_price, 0),
         "min_usd": round(values[0], 0),
         "max_usd": round(values[-1], 0),
         "comparables_count": len(values),
         "property_type": prop.property_type.value,
         "listing_type": prop.listing_type.value,
         "price_per_m2_usd": prop.price_per_m2_usd,
-        "median_per_m2_usd": None,
+        "median_per_m2_usd": prop.score_median_per_m2,
+        "num_comparables": prop.score_num_comparables,
+        "comparison_scope": prop.score_comparison_scope,
+        "pct_vs_median": pct_vs_median,
     }

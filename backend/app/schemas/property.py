@@ -106,6 +106,9 @@ class PriceContextSchema(BaseModel):
     listing_type: str
     price_per_m2_usd: float | None = None
     median_per_m2_usd: float | None = None
+    num_comparables: int | None = None
+    comparison_scope: str | None = None  # barrio, ciudad, departamento, tipo_global
+    pct_vs_median: float | None = None  # positive = above median, negative = below
 
 
 class ImageAnalysisSchema(BaseModel):

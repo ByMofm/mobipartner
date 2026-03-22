@@ -79,6 +79,11 @@ class Property(Base):
     condition_score = Column(Integer, nullable=True)   # 1-100, from image analysis
     overall_score = Column(Integer, nullable=True)     # 1-100, composite
 
+    # Price scoring context (Phase 5)
+    score_median_per_m2 = Column(Float, nullable=True)
+    score_num_comparables = Column(Integer, nullable=True)
+    score_comparison_scope = Column(String(50), nullable=True)  # barrio, ciudad, departamento, tipo_global
+
     # Tracking
     first_seen_at = Column(DateTime, default=datetime.utcnow)
     last_seen_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -248,11 +248,31 @@ export default function PropertyDetailPage({
                 </Typography>
                 {property.price_context && (
                   <Typography variant="caption" sx={{ opacity: 0.85 }}>
-                    USD {property.price_context.price_usd?.toLocaleString("es-AR")}
-                    <br />
-                    mediana USD {property.price_context.median_usd?.toLocaleString("es-AR")}
-                    <br />
-                    ({property.price_context.comparables_count} similares)
+                    {property.price_context.pct_vs_median != null ? (
+                      <>
+                        {property.price_context.pct_vs_median < 0
+                          ? `${Math.abs(property.price_context.pct_vs_median)}% debajo`
+                          : property.price_context.pct_vs_median > 0
+                          ? `${property.price_context.pct_vs_median}% encima`
+                          : "En"} de la mediana
+                        <br />
+                        {property.price_context.median_per_m2_usd != null && (
+                          <>USD {property.price_context.median_per_m2_usd.toLocaleString("es-AR")}/m2<br /></>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        USD {property.price_context.price_usd?.toLocaleString("es-AR")}
+                        <br />
+                        mediana USD {property.price_context.median_usd?.toLocaleString("es-AR")}
+                        <br />
+                      </>
+                    )}
+                    ({property.price_context.num_comparables ?? property.price_context.comparables_count} similares
+                    {property.price_context.comparison_scope === "barrio" && " en tu zona"}
+                    {property.price_context.comparison_scope === "ciudad" && " en la ciudad"}
+                    {property.price_context.comparison_scope === "departamento" && " en el departamento"}
+                    {property.price_context.comparison_scope === "tipo_global" && " en la provincia"})
                   </Typography>
                 )}
               </Paper>
@@ -272,7 +292,13 @@ export default function PropertyDetailPage({
                 {property.price_score != null && (
                   <Box>
                     <Box sx={{ display: "flex", justifyContent: "space-between", mb: 0.5 }}>
-                      <Typography variant="caption">Precio</Typography>
+                      <Typography variant="caption">
+                        Precio
+                        {property.price_context?.comparison_scope === "barrio" && " (vs zona)"}
+                        {property.price_context?.comparison_scope === "ciudad" && " (vs ciudad)"}
+                        {property.price_context?.comparison_scope === "departamento" && " (vs depto)"}
+                        {property.price_context?.comparison_scope === "tipo_global" && " (vs provincia)"}
+                      </Typography>
                       <Typography variant="caption" fontWeight="bold">{property.price_score}/100</Typography>
                     </Box>
                     <LinearProgress

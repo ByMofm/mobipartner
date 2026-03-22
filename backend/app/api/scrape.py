@@ -163,6 +163,19 @@ def get_schedule():
     return get_status()
 
 
+@router.get("/health")
+def pipeline_health(db: Session = Depends(get_db)):
+    """Comprehensive pipeline health: per-spider status, property counts, alerts."""
+    from app.services.health import get_pipeline_health
+    health = get_pipeline_health(db)
+    try:
+        from app.scheduler import get_status
+        health["scheduler"] = get_status()
+    except Exception:
+        health["scheduler"] = None
+    return health
+
+
 @router.post("/run-pipeline")
 def trigger_pipeline():
     """Manually trigger the full daily pipeline in background."""

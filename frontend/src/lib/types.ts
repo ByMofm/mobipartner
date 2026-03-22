@@ -79,6 +79,9 @@ export interface PriceContext {
   listing_type: string;
   price_per_m2_usd: number | null;
   median_per_m2_usd: number | null;
+  num_comparables: number | null;
+  comparison_scope: string | null;
+  pct_vs_median: number | null;
 }
 
 export interface ImageAnalysis {
