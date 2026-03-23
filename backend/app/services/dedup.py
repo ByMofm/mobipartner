@@ -265,23 +265,29 @@ def deduplicate_listing(db: Session, listing: PropertyListing) -> Property:
 
 
 def run_dedup_pass(db: Session, max_merges: int = 500) -> dict:
-    """Run deduplication across all unlinked or potentially duplicate listings.
+    """Run deduplication across all active properties.
 
-    Returns counts of merges performed.
-    Limits to max_merges to avoid very long runs against Supabase.
+    Two-phase approach to avoid Supabase statement timeouts:
+    1. Read-only phase: normalize addresses and collect merge pairs (no writes).
+    2. Write phase: execute each merge in an isolated fresh session.
+
+    price_history.property_id is NOT updated here — it's a denormalized
+    shortcut; the authoritative link is property_listing_id which IS updated.
     """
-    stats = {"checked": 0, "merged": 0, "skipped": 0}
+    from app.database import SessionLocal
 
-    # First, normalize addresses on all properties (commit in batches)
-    properties = db.query(Property).filter(Property.address_normalized.is_(None)).all()
-    for i, prop in enumerate(properties):
+    stats = {"checked": 0, "merged": 0, "failed": 0}
+
+    # --- Phase 1: normalize addresses (batched commits, safe) ---
+    to_normalize = db.query(Property).filter(Property.address_normalized.is_(None)).all()
+    for i, prop in enumerate(to_normalize):
         prop.address_normalized = normalize_address(prop.address)
-        if i % 200 == 0 and i > 0:
+        if i % 100 == 99:
             db.commit()
-    db.commit()
+    if to_normalize:
+        db.commit()
 
-    # Find properties that might be duplicates
-    # Group by type + listing_type and check within each group
+    # --- Phase 1b: collect merge pairs (read-only, no writes) ---
     all_properties = (
         db.query(Property)
         .filter(Property.is_active == True, Property.address_normalized.isnot(None))
@@ -289,27 +295,28 @@ def run_dedup_pass(db: Session, max_merges: int = 500) -> dict:
         .all()
     )
 
-    # Build groups by (property_type, listing_type)
-    groups: dict[tuple, list[Property]] = {}
+    groups: dict[tuple, list] = {}
     for prop in all_properties:
         key = (prop.property_type, prop.listing_type)
         groups.setdefault(key, []).append(prop)
 
-    merged_ids = set()
+    # Collect (keep_id, discard_id) pairs to merge
+    merge_pairs: list[tuple[int, int]] = []
+    discarded: set[int] = set()
 
     for (ptype, ltype), props in groups.items():
-        if stats["merged"] >= max_merges:
-            logger.info(f"Reached max_merges={max_merges}, stopping dedup")
+        if len(merge_pairs) >= max_merges:
             break
         for i, prop in enumerate(props):
-            if prop.id in merged_ids:
+            if prop.id in discarded:
                 continue
             stats["checked"] += 1
 
-            for j in range(i + 1, len(props)):
-                other = props[j]
-                if other.id in merged_ids:
+            for other in props[i + 1:]:
+                if other.id in discarded:
                     continue
+                if len(merge_pairs) >= max_merges:
+                    break
 
                 # Quick area filter
                 if prop.total_area_m2 and other.total_area_m2:
@@ -319,7 +326,6 @@ def run_dedup_pass(db: Session, max_merges: int = 500) -> dict:
                     if ratio < 0.7:
                         continue
 
-                # Compute similarity
                 addr_sim = 0.0
                 if prop.address_normalized and other.address_normalized:
                     addr_sim = db.execute(
@@ -327,58 +333,46 @@ def run_dedup_pass(db: Session, max_merges: int = 500) -> dict:
                         {"a": prop.address_normalized, "b": other.address_normalized},
                     ).scalar() or 0.0
 
-                area_sim = compute_area_similarity(prop.total_area_m2, other.total_area_m2)
-                rooms_sim = compute_rooms_similarity(prop.rooms, other.rooms)
-                price_sim = compute_price_similarity(prop.current_price, other.current_price)
-                dist_sim = compute_distance_similarity(
-                    prop.latitude, prop.longitude, other.latitude, other.longitude
-                )
-
                 score = (
                     WEIGHT_ADDRESS * addr_sim
-                    + WEIGHT_AREA * area_sim
-                    + WEIGHT_ROOMS * rooms_sim
-                    + WEIGHT_PRICE * price_sim
-                    + WEIGHT_DISTANCE * dist_sim
+                    + WEIGHT_AREA * compute_area_similarity(prop.total_area_m2, other.total_area_m2)
+                    + WEIGHT_ROOMS * compute_rooms_similarity(prop.rooms, other.rooms)
+                    + WEIGHT_PRICE * compute_price_similarity(prop.current_price, other.current_price)
+                    + WEIGHT_DISTANCE * compute_distance_similarity(
+                        prop.latitude, prop.longitude, other.latitude, other.longitude
+                    )
                 )
 
                 if score >= MERGE_THRESHOLD:
-                    # Merge: move other's listings to prop
-                    logger.info(
-                        f"Merging property {other.id} into {prop.id} (score={score:.2f})"
-                    )
-                    other_listings = (
-                        db.query(PropertyListing)
-                        .filter(PropertyListing.property_id == other.id)
-                        .all()
-                    )
-                    for ol in other_listings:
-                        ol.property_id = prop.id
+                    merge_pairs.append((prop.id, other.id))
+                    discarded.add(other.id)
+                    logger.info(f"Dedup: will merge {other.id} -> {prop.id} (score={score:.2f})")
 
-                    # Update price history in small batches to avoid statement timeout
-                    from app.models.property import PriceHistory
+    logger.info(f"Dedup: {stats['checked']} checked, {len(merge_pairs)} pairs to merge")
 
-                    ph_records = (
-                        db.query(PriceHistory)
-                        .filter(PriceHistory.property_id == other.id)
-                        .all()
-                    )
-                    for ph in ph_records:
-                        ph.property_id = prop.id
+    # --- Phase 2: execute each merge in its own isolated session ---
+    for keep_id, discard_id in merge_pairs:
+        merge_db = SessionLocal()
+        try:
+            # Reassign listings from discard -> keep
+            merge_db.query(PropertyListing).filter(
+                PropertyListing.property_id == discard_id
+            ).update({"property_id": keep_id}, synchronize_session=False)
 
-                    # Deactivate the duplicate
-                    other.is_active = False
-                    merged_ids.add(other.id)
-                    stats["merged"] += 1
+            # Deactivate the duplicate property
+            merge_db.query(Property).filter(
+                Property.id == discard_id
+            ).update({"is_active": False}, synchronize_session=False)
 
-                    # Commit after each merge to avoid long-running transactions
-                    # that get cancelled by Supabase statement timeout
-                    try:
-                        db.commit()
-                    except Exception as commit_err:
-                        logger.error(f"Commit error during merge {other.id}->{prop.id}: {commit_err}")
-                        db.rollback()
+            merge_db.commit()
+            stats["merged"] += 1
+            logger.info(f"Dedup: merged {discard_id} -> {keep_id}")
+        except Exception as e:
+            merge_db.rollback()
+            stats["failed"] += 1
+            logger.error(f"Dedup: failed merge {discard_id} -> {keep_id}: {e}")
+        finally:
+            merge_db.close()
 
-    db.commit()
     logger.info(f"Dedup pass complete: {stats}")
     return stats
