@@ -264,18 +264,21 @@ def deduplicate_listing(db: Session, listing: PropertyListing) -> Property:
     return None
 
 
-def run_dedup_pass(db: Session) -> dict:
+def run_dedup_pass(db: Session, max_merges: int = 500) -> dict:
     """Run deduplication across all unlinked or potentially duplicate listings.
 
     Returns counts of merges performed.
+    Limits to max_merges to avoid very long runs against Supabase.
     """
     stats = {"checked": 0, "merged": 0, "skipped": 0}
 
-    # First, normalize addresses on all properties
+    # First, normalize addresses on all properties (commit in batches)
     properties = db.query(Property).filter(Property.address_normalized.is_(None)).all()
-    for prop in properties:
+    for i, prop in enumerate(properties):
         prop.address_normalized = normalize_address(prop.address)
-    db.flush()
+        if i % 200 == 0 and i > 0:
+            db.commit()
+    db.commit()
 
     # Find properties that might be duplicates
     # Group by type + listing_type and check within each group
@@ -295,6 +298,9 @@ def run_dedup_pass(db: Session) -> dict:
     merged_ids = set()
 
     for (ptype, ltype), props in groups.items():
+        if stats["merged"] >= max_merges:
+            logger.info(f"Reached max_merges={max_merges}, stopping dedup")
+            break
         for i, prop in enumerate(props):
             if prop.id in merged_ids:
                 continue
@@ -349,17 +355,29 @@ def run_dedup_pass(db: Session) -> dict:
                     for ol in other_listings:
                         ol.property_id = prop.id
 
-                    # Update price history references
+                    # Update price history in small batches to avoid statement timeout
                     from app.models.property import PriceHistory
 
-                    db.query(PriceHistory).filter(
-                        PriceHistory.property_id == other.id
-                    ).update({"property_id": prop.id})
+                    ph_records = (
+                        db.query(PriceHistory)
+                        .filter(PriceHistory.property_id == other.id)
+                        .all()
+                    )
+                    for ph in ph_records:
+                        ph.property_id = prop.id
 
                     # Deactivate the duplicate
                     other.is_active = False
                     merged_ids.add(other.id)
                     stats["merged"] += 1
+
+                    # Commit after each merge to avoid long-running transactions
+                    # that get cancelled by Supabase statement timeout
+                    try:
+                        db.commit()
+                    except Exception as commit_err:
+                        logger.error(f"Commit error during merge {other.id}->{prop.id}: {commit_err}")
+                        db.rollback()
 
     db.commit()
     logger.info(f"Dedup pass complete: {stats}")
