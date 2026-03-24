@@ -37,8 +37,17 @@ class MercadoLibreSpider(scrapy.Spider):
     custom_settings = {
         "PLAYWRIGHT_BROWSER_TYPE": "firefox",
         "DOWNLOAD_DELAY": 2,
-        "CONCURRENT_REQUESTS": 1,
+        "CONCURRENT_REQUESTS": 2,
     }
+
+    def closed(self, reason):
+        stats = self.crawler.stats.get_stats()
+        self.logger.info(
+            f"Spider closed ({reason}): "
+            f"items={stats.get('item_scraped_count', 0)}, "
+            f"errors={stats.get('item_dropped_count', 0)}, "
+            f"retries={stats.get('playwright_retry/count', 0)}"
+        )
 
     def start_requests(self):
         for slug, prop_type, listing_type in self.SEARCHES:

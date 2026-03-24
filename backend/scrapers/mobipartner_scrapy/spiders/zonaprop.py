@@ -36,11 +36,13 @@ class ZonaPropSpider(scrapy.Spider):
     custom_settings = {
         "PLAYWRIGHT_BROWSER_TYPE": "firefox",
         "DOWNLOAD_DELAY": 3,
-        "CONCURRENT_REQUESTS": 1,
+        "CONCURRENT_REQUESTS": 2,
         "ROBOTSTXT_OBEY": False,
         "COOKIES_ENABLED": False,
         "DOWNLOADER_MIDDLEWARES": {
             "mobipartner_scrapy.middlewares.RotateUserAgentMiddleware": None,
+            "mobipartner_scrapy.middlewares.PlaywrightRetryMiddleware": 610,
+            "mobipartner_scrapy.middlewares.CircuitBreakerMiddleware": 620,
         },
         "USER_AGENT": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
     }
@@ -64,6 +66,15 @@ class ZonaPropSpider(scrapy.Spider):
                 callback=self.parse_listing_page,
                 errback=self.handle_error,
             )
+
+    def closed(self, reason):
+        stats = self.crawler.stats.get_stats()
+        self.logger.info(
+            f"Spider closed ({reason}): "
+            f"items={stats.get('item_scraped_count', 0)}, "
+            f"errors={stats.get('item_dropped_count', 0)}, "
+            f"retries={stats.get('playwright_retry/count', 0)}"
+        )
 
     def handle_error(self, failure):
         self.logger.error(f"Request failed: {failure.request.url} — {failure.value}")

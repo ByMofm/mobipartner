@@ -53,14 +53,21 @@ class InmoClickSpider(scrapy.Spider):
 
     def start_requests(self):
         for operacion, listing_type in self.SEARCHES:
-            for page in range(1, self.MAX_PAGES + 1):
-                url = f"https://inmoclick.com/inmuebles/tucuman?operacion={operacion}&page={page}"
-                yield scrapy.Request(
-                    url,
-                    meta={"listing_type": listing_type, "page": page},
-                    callback=self.parse_listing_page,
-                    errback=self.handle_error,
-                )
+            url = f"https://inmoclick.com/inmuebles/tucuman?operacion={operacion}&page=1"
+            yield scrapy.Request(
+                url,
+                meta={"listing_type": listing_type, "page": 1, "operacion": operacion},
+                callback=self.parse_listing_page,
+                errback=self.handle_error,
+            )
+
+    def closed(self, reason):
+        stats = self.crawler.stats.get_stats()
+        self.logger.info(
+            f"Spider closed ({reason}): "
+            f"items={stats.get('item_scraped_count', 0)}, "
+            f"errors={stats.get('item_dropped_count', 0)}"
+        )
 
     def handle_error(self, failure):
         self.logger.error(f"Request failed: {failure.request.url} — {failure.value}")
@@ -92,6 +99,18 @@ class InmoClickSpider(scrapy.Spider):
 
         if not properties:
             return
+
+        # Paginate incrementally: yield next page only if current had results
+        page = response.meta["page"]
+        if page < self.MAX_PAGES:
+            operacion = response.meta["operacion"]
+            next_url = f"https://inmoclick.com/inmuebles/tucuman?operacion={operacion}&page={page + 1}"
+            yield scrapy.Request(
+                next_url,
+                meta={"listing_type": response.meta["listing_type"], "page": page + 1, "operacion": operacion},
+                callback=self.parse_listing_page,
+                errback=self.handle_error,
+            )
 
         listing_type = response.meta["listing_type"]
         known_ids = getattr(self, "known_source_ids", set())

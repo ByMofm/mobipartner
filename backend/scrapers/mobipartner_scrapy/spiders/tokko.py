@@ -31,11 +31,20 @@ class TokkoSpider(scrapy.Spider):
     custom_settings = {
         "PLAYWRIGHT_BROWSER_TYPE": "firefox",
         "DOWNLOAD_DELAY": 3,
-        "CONCURRENT_REQUESTS": 1,
+        "CONCURRENT_REQUESTS": 2,
         "ROBOTSTXT_OBEY": False,
         "COOKIES_ENABLED": False,
         "USER_AGENT": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
     }
+
+    def closed(self, reason):
+        stats = self.crawler.stats.get_stats()
+        self.logger.info(
+            f"Spider closed ({reason}): "
+            f"items={stats.get('item_scraped_count', 0)}, "
+            f"errors={stats.get('item_dropped_count', 0)}, "
+            f"retries={stats.get('playwright_retry/count', 0)}"
+        )
 
     def start_requests(self):
         for tipo, operacion, prop_type, listing_type in self.SEARCHES:
@@ -46,8 +55,7 @@ class TokkoSpider(scrapy.Spider):
                     "playwright": True,
                     "playwright_context": f"tokko-{self.name}-{tipo}-{operacion}",
                     "playwright_page_methods": [
-                        PageMethod("wait_for_load_state", "networkidle"),
-                        PageMethod("wait_for_timeout", 2000),
+                        PageMethod("wait_for_selector", ".resultados-list li, .property-list li, .prop-list li", timeout=15000),
                     ],
                     "property_type": prop_type,
                     "listing_type": listing_type,
@@ -94,7 +102,7 @@ class TokkoSpider(scrapy.Spider):
                         "playwright": True,
                         "playwright_context": f"tokko-detail-{source_id}",
                         "playwright_page_methods": [
-                            PageMethod("wait_for_load_state", "networkidle"),
+                            PageMethod("wait_for_selector", "h1, h2, .description, .prop-description", timeout=15000),
                         ],
                         "item_data": dict(item),
                     },
@@ -120,8 +128,7 @@ class TokkoSpider(scrapy.Spider):
                         "playwright": True,
                         "playwright_context": f"tokko-{self.name}-p{page+1}",
                         "playwright_page_methods": [
-                            PageMethod("wait_for_load_state", "networkidle"),
-                            PageMethod("wait_for_timeout", 2000),
+                            PageMethod("wait_for_selector", ".resultados-list li, .property-list li, .prop-list li", timeout=15000),
                         ],
                         "property_type": response.meta["property_type"],
                         "listing_type": response.meta["listing_type"],
@@ -139,8 +146,7 @@ class TokkoSpider(scrapy.Spider):
                         "playwright": True,
                         "playwright_context": f"tokko-{self.name}-p{page+1}",
                         "playwright_page_methods": [
-                            PageMethod("wait_for_load_state", "networkidle"),
-                            PageMethod("wait_for_timeout", 2000),
+                            PageMethod("wait_for_selector", ".resultados-list li, .property-list li, .prop-list li", timeout=15000),
                         ],
                         "property_type": response.meta["property_type"],
                         "listing_type": response.meta["listing_type"],

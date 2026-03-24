@@ -9,12 +9,15 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import sys
 import unicodedata
 from datetime import datetime, timezone
 
 # Add parent dir to path so we can import app modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from sqlalchemy import text as sa_text
 
 from app.config import settings
 from app.database import SessionLocal
@@ -28,30 +31,68 @@ from app.utils.currency import get_usd_ars_blue_rate_sync
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+# Timeout per step (seconds) — prevents any single step from hanging
+STEP_TIMEOUTS = {
+    "backfill_apto_credito": 300,   # 5 min
+    "assign_locations": 300,         # 5 min
+    "geocode": 600,                  # 10 min
+    "score": 300,                    # 5 min
+    "dedup": 900,                    # 15 min
+}
+
+
+class StepTimeout(Exception):
+    pass
+
+
+def _timeout_handler(signum, frame):
+    raise StepTimeout("Step timed out")
+
 
 def _normalize(text: str) -> str:
     nfkd = unicodedata.normalize("NFKD", text.lower())
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
-def step(name: str, fn):
+def step(name: str, fn, critical: bool = False):
+    """Run a post-process step with timeout.
+
+    Args:
+        name: Step name for logging.
+        fn: Callable to execute.
+        critical: If True, failure is fatal. If False, log and continue.
+    """
     logger.info(f"[postprocess] starting: {name}")
     start = datetime.now(timezone.utc)
+    timeout = STEP_TIMEOUTS.get(name, 600)
+
+    # Set alarm-based timeout (Unix only)
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(timeout)
+
     try:
         result = fn()
+        signal.alarm(0)  # Cancel alarm
         elapsed = round((datetime.now(timezone.utc) - start).total_seconds())
         logger.info(f"[postprocess] {name} ok ({elapsed}s): {result}")
         return True
+    except StepTimeout:
+        elapsed = round((datetime.now(timezone.utc) - start).total_seconds())
+        logger.error(f"[postprocess] {name} TIMED OUT after {elapsed}s (limit: {timeout}s)")
+        return False
     except Exception as e:
+        signal.alarm(0)
         elapsed = round((datetime.now(timezone.utc) - start).total_seconds())
         logger.error(f"[postprocess] {name} error ({elapsed}s): {e}")
         return False
+    finally:
+        signal.signal(signal.SIGALRM, old_handler)
 
 
 def main():
-    errors = 0
+    critical_errors = 0
 
-    # 1. Backfill apto_credito
+    # 1. Backfill apto_credito (non-critical)
     def backfill():
         db = SessionLocal()
         try:
@@ -77,9 +118,9 @@ def main():
             db.close()
 
     if not step("backfill_apto_credito", backfill):
-        errors += 1
+        logger.warning("[postprocess] backfill_apto_credito failed, continuing...")
 
-    # 2. Assign locations
+    # 2. Assign locations (non-critical)
     def assign_locations():
         db = SessionLocal()
         try:
@@ -103,9 +144,9 @@ def main():
             db.close()
 
     if not step("assign_locations", assign_locations):
-        errors += 1
+        logger.warning("[postprocess] assign_locations failed, continuing...")
 
-    # 3. Geocode
+    # 3. Geocode (non-critical)
     def geocode():
         db = SessionLocal()
         try:
@@ -114,9 +155,9 @@ def main():
             db.close()
 
     if not step("geocode", geocode):
-        errors += 1
+        logger.warning("[postprocess] geocode failed, continuing...")
 
-    # 4. Score
+    # 4. Score (critical — affects user-facing data)
     def score():
         db = SessionLocal()
         try:
@@ -125,22 +166,24 @@ def main():
         finally:
             db.close()
 
-    if not step("score", score):
-        errors += 1
+    if not step("score", score, critical=True):
+        critical_errors += 1
 
-    # 5. Dedup
+    # 5. Dedup (critical — affects data integrity)
     def dedup():
         db = SessionLocal()
         try:
+            # Set statement timeout to prevent runaway queries
+            db.execute(sa_text("SET statement_timeout = '600s'"))
             return run_dedup_pass(db)
         finally:
             db.close()
 
-    if not step("dedup", dedup):
-        errors += 1
+    if not step("dedup", dedup, critical=True):
+        critical_errors += 1
 
-    if errors:
-        logger.warning(f"[postprocess] finished with {errors} error(s)")
+    if critical_errors:
+        logger.warning(f"[postprocess] finished with {critical_errors} critical error(s)")
         sys.exit(1)
     else:
         logger.info("[postprocess] finished successfully")

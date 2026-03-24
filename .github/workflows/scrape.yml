@@ -11,9 +11,9 @@ env:
   USD_ARS_RATE_FALLBACK: ${{ secrets.USD_ARS_RATE_FALLBACK }}
 
 jobs:
-  scrape-zonaprop:
+  scrape-playwright:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -21,6 +21,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('backend/requirements.txt') }}
 
       - name: Cache Playwright browsers
         uses: actions/cache@v4
@@ -35,69 +41,92 @@ jobs:
 
       - name: Run ZonaProp spider
         working-directory: backend/scrapers
+        continue-on-error: true
         env:
-          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
-        run: python -m scrapy crawl zonaprop
-
-  scrape-argenprop:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-firefox-${{ runner.os }}
-
-      - name: Install dependencies
+          PYTHONPATH: ${{ github.workspace }}/backend
         run: |
-          pip install -r backend/requirements.txt
-          playwright install firefox --with-deps
+          echo "::group::ZonaProp"
+          start=$SECONDS
+          python -m scrapy crawl zonaprop 2>&1 | tee /tmp/zonaprop.log
+          echo "zonaprop_status=$?" >> $GITHUB_ENV
+          echo "zonaprop_time=$((SECONDS - start))" >> $GITHUB_ENV
+          echo "::endgroup::"
 
       - name: Run Argenprop spider
         working-directory: backend/scrapers
+        continue-on-error: true
         env:
-          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
-        run: python -m scrapy crawl argenprop
-
-  scrape-mercadolibre:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-firefox-${{ runner.os }}
-
-      - name: Install dependencies
+          PYTHONPATH: ${{ github.workspace }}/backend
         run: |
-          pip install -r backend/requirements.txt
-          playwright install firefox --with-deps
+          echo "::group::Argenprop"
+          start=$SECONDS
+          python -m scrapy crawl argenprop 2>&1 | tee /tmp/argenprop.log
+          echo "argenprop_status=$?" >> $GITHUB_ENV
+          echo "argenprop_time=$((SECONDS - start))" >> $GITHUB_ENV
+          echo "::endgroup::"
 
       - name: Run MercadoLibre spider
         working-directory: backend/scrapers
+        continue-on-error: true
         env:
-          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
-        run: python -m scrapy crawl mercadolibre
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          echo "::group::MercadoLibre"
+          start=$SECONDS
+          python -m scrapy crawl mercadolibre 2>&1 | tee /tmp/mercadolibre.log
+          echo "mercadolibre_status=$?" >> $GITHUB_ENV
+          echo "mercadolibre_time=$((SECONDS - start))" >> $GITHUB_ENV
+          echo "::endgroup::"
 
-  scrape-inmoclick:
+      - name: Run Guzman & Guzman spider
+        working-directory: backend/scrapers
+        continue-on-error: true
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          echo "::group::Guzman & Guzman"
+          start=$SECONDS
+          python -m scrapy crawl guzman_guzman 2>&1 | tee /tmp/guzman_guzman.log
+          echo "guzman_status=$?" >> $GITHUB_ENV
+          echo "guzman_time=$((SECONDS - start))" >> $GITHUB_ENV
+          echo "::endgroup::"
+
+      - name: Run Tucuman Propiedades spider
+        working-directory: backend/scrapers
+        continue-on-error: true
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          echo "::group::Tucuman Propiedades"
+          start=$SECONDS
+          python -m scrapy crawl tucumanpropiedades 2>&1 | tee /tmp/tucumanpropiedades.log
+          echo "tucumanpropiedades_status=$?" >> $GITHUB_ENV
+          echo "tucumanpropiedades_time=$((SECONDS - start))" >> $GITHUB_ENV
+          echo "::endgroup::"
+
+      - name: Upload spider logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-spider-logs
+          path: /tmp/*.log
+          retention-days: 7
+
+      - name: Playwright spiders summary
+        if: always()
+        run: |
+          echo "## Playwright Spiders" >> $GITHUB_STEP_SUMMARY
+          echo "| Spider | Status | Time |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| ZonaProp | ${{ env.zonaprop_status == '0' && '✅' || '❌' }} | ${{ env.zonaprop_time }}s |" >> $GITHUB_STEP_SUMMARY
+          echo "| Argenprop | ${{ env.argenprop_status == '0' && '✅' || '❌' }} | ${{ env.argenprop_time }}s |" >> $GITHUB_STEP_SUMMARY
+          echo "| MercadoLibre | ${{ env.mercadolibre_status == '0' && '✅' || '❌' }} | ${{ env.mercadolibre_time }}s |" >> $GITHUB_STEP_SUMMARY
+          echo "| Guzmán & Guzmán | ${{ env.guzman_status == '0' && '✅' || '❌' }} | ${{ env.guzman_time }}s |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tucumán Propiedades | ${{ env.tucumanpropiedades_status == '0' && '✅' || '❌' }} | ${{ env.tucumanpropiedades_time }}s |" >> $GITHUB_STEP_SUMMARY
+
+  scrape-http:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -105,122 +134,90 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('backend/requirements.txt') }}
 
       - name: Install dependencies (no Playwright)
         run: pip install -r backend/requirements.txt
 
       - name: Run InmoClick spider
         working-directory: backend/scrapers
+        continue-on-error: true
         env:
-          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
-        run: python -m scrapy crawl inmoclick
-
-  scrape-guzman-guzman:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-firefox-${{ runner.os }}
-
-      - name: Install dependencies
+          PYTHONPATH: ${{ github.workspace }}/backend
         run: |
-          pip install -r backend/requirements.txt
-          playwright install firefox --with-deps
+          echo "::group::InmoClick"
+          start=$SECONDS
+          python -m scrapy crawl inmoclick 2>&1 | tee /tmp/inmoclick.log
+          echo "inmoclick_status=$?" >> $GITHUB_ENV
+          echo "inmoclick_time=$((SECONDS - start))" >> $GITHUB_ENV
+          echo "::endgroup::"
 
-      - name: Run Guzmán & Guzmán spider
+      - name: Run Garcia Pinto spider
         working-directory: backend/scrapers
+        continue-on-error: true
         env:
-          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
-        run: python -m scrapy crawl guzman_guzman
-
-  scrape-tucumanpropiedades:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-firefox-${{ runner.os }}
-
-      - name: Install dependencies
+          PYTHONPATH: ${{ github.workspace }}/backend
         run: |
-          pip install -r backend/requirements.txt
-          playwright install firefox --with-deps
-
-      - name: Run Tucumán Propiedades spider
-        working-directory: backend/scrapers
-        env:
-          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
-        run: python -m scrapy crawl tucumanpropiedades
-
-  scrape-garcia-pinto:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies (no Playwright)
-        run: pip install -r backend/requirements.txt
-
-      - name: Run García Pinto spider
-        working-directory: backend/scrapers
-        env:
-          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
-        run: python -m scrapy crawl garcia_pinto
-
-  scrape-lima-inmobiliaria:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies (no Playwright)
-        run: pip install -r backend/requirements.txt
+          echo "::group::Garcia Pinto"
+          start=$SECONDS
+          python -m scrapy crawl garcia_pinto 2>&1 | tee /tmp/garcia_pinto.log
+          echo "garcia_pinto_status=$?" >> $GITHUB_ENV
+          echo "garcia_pinto_time=$((SECONDS - start))" >> $GITHUB_ENV
+          echo "::endgroup::"
 
       - name: Run Lima Inmobiliaria spider
         working-directory: backend/scrapers
+        continue-on-error: true
         env:
-          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
-        run: python -m scrapy crawl lima_inmobiliaria
+          PYTHONPATH: ${{ github.workspace }}/backend
+        run: |
+          echo "::group::Lima Inmobiliaria"
+          start=$SECONDS
+          python -m scrapy crawl lima_inmobiliaria 2>&1 | tee /tmp/lima_inmobiliaria.log
+          echo "lima_inmobiliaria_status=$?" >> $GITHUB_ENV
+          echo "lima_inmobiliaria_time=$((SECONDS - start))" >> $GITHUB_ENV
+          echo "::endgroup::"
+
+      - name: Upload spider logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: http-spider-logs
+          path: /tmp/*.log
+          retention-days: 7
+
+      - name: HTTP spiders summary
+        if: always()
+        run: |
+          echo "## HTTP Spiders" >> $GITHUB_STEP_SUMMARY
+          echo "| Spider | Status | Time |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| InmoClick | ${{ env.inmoclick_status == '0' && '✅' || '❌' }} | ${{ env.inmoclick_time }}s |" >> $GITHUB_STEP_SUMMARY
+          echo "| García Pinto | ${{ env.garcia_pinto_status == '0' && '✅' || '❌' }} | ${{ env.garcia_pinto_time }}s |" >> $GITHUB_STEP_SUMMARY
+          echo "| Lima Inmobiliaria | ${{ env.lima_inmobiliaria_status == '0' && '✅' || '❌' }} | ${{ env.lima_inmobiliaria_time }}s |" >> $GITHUB_STEP_SUMMARY
 
   post-process:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [scrape-zonaprop, scrape-argenprop, scrape-mercadolibre, scrape-inmoclick, scrape-guzman-guzman, scrape-tucumanpropiedades, scrape-garcia-pinto, scrape-lima-inmobiliaria]
+    needs: [scrape-playwright, scrape-http]
+    if: always() && (needs.scrape-playwright.result != 'cancelled' || needs.scrape-http.result != 'cancelled')
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('backend/requirements.txt') }}
 
       - name: Install dependencies (no Playwright)
         run: pip install -r backend/requirements.txt
@@ -228,25 +225,5 @@ jobs:
       - name: Run post-processing
         working-directory: backend
         env:
-          PYTHONPATH: /home/runner/work/mobiPartner/mobiPartner/backend
+          PYTHONPATH: ${{ github.workspace }}/backend
         run: python scripts/run_postprocess.py
-
-  notify:
-    runs-on: ubuntu-latest
-    needs: [scrape-zonaprop, scrape-argenprop, scrape-mercadolibre, scrape-inmoclick, scrape-guzman-guzman, scrape-tucumanpropiedades, scrape-garcia-pinto, scrape-lima-inmobiliaria, post-process]
-    if: always()
-    steps:
-      - name: Pipeline summary
-        run: |
-          echo "## Scrape Pipeline Results" >> $GITHUB_STEP_SUMMARY
-          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| ZonaProp | ${{ needs.scrape-zonaprop.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Argenprop | ${{ needs.scrape-argenprop.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| MercadoLibre | ${{ needs.scrape-mercadolibre.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| InmoClick | ${{ needs.scrape-inmoclick.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Guzmán & Guzmán | ${{ needs.scrape-guzman-guzman.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Tucumán Propiedades | ${{ needs.scrape-tucumanpropiedades.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| García Pinto | ${{ needs.scrape-garcia-pinto.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Lima Inmobiliaria | ${{ needs.scrape-lima-inmobiliaria.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Post-process | ${{ needs.post-process.result || 'skipped' }} |" >> $GITHUB_STEP_SUMMARY

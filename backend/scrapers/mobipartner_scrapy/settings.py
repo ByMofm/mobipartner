@@ -8,6 +8,7 @@ NEWSPIDER_MODULE = "mobipartner_scrapy.spiders"
 ROBOTSTXT_OBEY = True
 
 DOWNLOAD_DELAY = 3
+RANDOMIZE_DOWNLOAD_DELAY = True
 CONCURRENT_REQUESTS_PER_DOMAIN = 3
 CONCURRENT_REQUESTS = 6
 
@@ -44,6 +45,8 @@ USER_AGENTS = [
 
 DOWNLOADER_MIDDLEWARES = {
     "mobipartner_scrapy.middlewares.RotateUserAgentMiddleware": 400,
+    "mobipartner_scrapy.middlewares.PlaywrightRetryMiddleware": 610,
+    "mobipartner_scrapy.middlewares.CircuitBreakerMiddleware": 620,
 }
 
 DOWNLOAD_HANDLERS = {

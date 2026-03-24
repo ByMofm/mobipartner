@@ -26,11 +26,20 @@ class TucumanPropiedadesSpider(scrapy.Spider):
     custom_settings = {
         "PLAYWRIGHT_BROWSER_TYPE": "firefox",
         "DOWNLOAD_DELAY": 3,
-        "CONCURRENT_REQUESTS": 1,
+        "CONCURRENT_REQUESTS": 2,
         "ROBOTSTXT_OBEY": False,
         "COOKIES_ENABLED": True,  # Laravel needs cookies for CSRF
         "USER_AGENT": "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
     }
+
+    def closed(self, reason):
+        stats = self.crawler.stats.get_stats()
+        self.logger.info(
+            f"Spider closed ({reason}): "
+            f"items={stats.get('item_scraped_count', 0)}, "
+            f"errors={stats.get('item_dropped_count', 0)}, "
+            f"retries={stats.get('playwright_retry/count', 0)}"
+        )
 
     def start_requests(self):
         for purpose, listing_type in self.SEARCHES:
@@ -41,7 +50,7 @@ class TucumanPropiedadesSpider(scrapy.Spider):
                     "playwright": True,
                     "playwright_context": f"tucprop-{purpose}-p1",
                     "playwright_page_methods": [
-                        PageMethod("wait_for_load_state", "networkidle"),
+                        PageMethod("wait_for_selector", ".property_item, .ad-box-grid-view, .listing-item, .property-card, .card-property", timeout=15000),
                     ],
                     "listing_type": listing_type,
                     "purpose": purpose,
@@ -136,7 +145,7 @@ class TucumanPropiedadesSpider(scrapy.Spider):
                         "playwright": True,
                         "playwright_context": f"tucprop-detail-{source_id[:20]}",
                         "playwright_page_methods": [
-                            PageMethod("wait_for_load_state", "networkidle"),
+                            PageMethod("wait_for_selector", "h1, .property-title, .ad-title", timeout=15000),
                         ],
                         "item_data": dict(item),
                     },
@@ -161,7 +170,7 @@ class TucumanPropiedadesSpider(scrapy.Spider):
                         "playwright": True,
                         "playwright_context": f"tucprop-{response.meta['purpose']}-p{page+1}",
                         "playwright_page_methods": [
-                            PageMethod("wait_for_load_state", "networkidle"),
+                            PageMethod("wait_for_selector", ".property_item, .ad-box-grid-view, .listing-item, .property-card, .card-property", timeout=15000),
                         ],
                         "listing_type": response.meta["listing_type"],
                         "purpose": response.meta["purpose"],

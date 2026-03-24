@@ -42,6 +42,14 @@ class DevelopiaSpider(scrapy.Spider):
                 errback=self.handle_error,
             )
 
+    def closed(self, reason):
+        stats = self.crawler.stats.get_stats()
+        self.logger.info(
+            f"Spider closed ({reason}): "
+            f"items={stats.get('item_scraped_count', 0)}, "
+            f"errors={stats.get('item_dropped_count', 0)}"
+        )
+
     def handle_error(self, failure):
         self.logger.error(f"Request failed: {failure.request.url} — {failure.value}")
 
