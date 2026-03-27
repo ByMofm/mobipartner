@@ -54,62 +54,55 @@ class DevelopiaSpider(scrapy.Spider):
         self.logger.error(f"Request failed: {failure.request.url} — {failure.value}")
 
     def parse_listing_page(self, response):
-        """Parse listing page with property cards."""
-        cards = response.css(
-            ".property-card, .propiedad, .card, .listing-item, "
-            ".property-item, article.property"
-        )
+        """Parse listing page with property cards.
+
+        Developia sites use minimal CSS classes. We find property links
+        matching /propiedades/{slug} and extract data from surrounding elements.
+        """
+        # Find all unique property detail links
+        links = response.css('a[href*="/propiedades/"]::attr(href)').getall()
+        # Deduplicate while preserving order, filter out pagination/nav links
+        seen = set()
+        property_links = []
+        for link in links:
+            slug = link.rstrip("/").split("/")[-1]
+            if slug and slug not in seen and not slug.startswith("?"):
+                seen.add(slug)
+                property_links.append(link)
 
         self.logger.info(
-            f"Page {response.meta['page']} — {response.url}: {len(cards)} cards"
+            f"Page {response.meta['page']} — {response.url}: {len(property_links)} cards"
         )
 
-        if not cards:
+        if not property_links:
             return
 
         known_ids = getattr(self, "known_source_ids", set())
 
-        for card in cards:
-            link = card.css("a::attr(href)").get("")
-            if not link:
-                continue
-
+        for link in property_links:
             detail_url = self._abs_url(link)
             slug = link.rstrip("/").split("/")[-1]
             source_id = slug
 
-            # Basic data from card
-            title = card.css(
-                "h3::text, h4::text, .title::text, .property-title::text"
-            ).get("").strip()
-
-            price_text = card.css(
-                ".price::text, .precio::text, .property-price::text"
-            ).get("").strip()
-            price, currency = self._parse_price(price_text)
-
-            address = card.css(
-                ".address::text, .ubicacion::text, .location::text, "
-                ".property-address::text"
-            ).get("").strip()
-
-            images = card.css("img::attr(src), img::attr(data-src)").getall()
-            image_urls = [
-                img for img in dict.fromkeys(images)
-                if img and "logo" not in img and "placeholder" not in img
-            ]
+            # Extract title from the link text or nearby h3
+            title_el = response.css(f'a[href$="{slug}"]::text').get("").strip()
+            # Also try h3 containing a link to this property
+            if not title_el:
+                title_el = response.css(
+                    f'h3 a[href*="{slug}"]::text'
+                ).get("").strip()
 
             item = PropertyItem()
             item["source"] = self.name
             item["source_id"] = source_id
             item["source_url"] = detail_url
-            item["title"] = title if title else slug
-            item["price"] = price
-            item["currency"] = currency
-            item["address"] = address
-            item["property_type"] = self._guess_type(title + " " + slug)
+            item["title"] = title_el if title_el else slug.replace("-", " ").title()
+            item["price"] = None
+            item["currency"] = None
+            item["address"] = ""
+            item["property_type"] = self._guess_type(item["title"])
             item["listing_type"] = response.meta["listing_type"]
-            item["image_urls"] = image_urls
+            item["image_urls"] = []
             item["latitude"] = None
             item["longitude"] = None
             item["total_area_m2"] = None
@@ -124,6 +117,7 @@ class DevelopiaSpider(scrapy.Spider):
             item["raw_data"] = {"url": detail_url}
 
             if source_id not in known_ids:
+                # Always visit detail page — card data is too sparse
                 yield scrapy.Request(
                     detail_url,
                     meta={"item_data": dict(item)},
@@ -134,12 +128,13 @@ class DevelopiaSpider(scrapy.Spider):
             else:
                 yield item
 
-        # Pagination
+        # Pagination — try next link, then increment page number
         page = response.meta["page"]
-        if page < self.MAX_PAGES:
+        if page < self.MAX_PAGES and property_links:
             next_link = response.css(
                 "a[rel=next]::attr(href), .pagination a.next::attr(href), "
-                ".pagination li:last-child a::attr(href)"
+                ".pagination li:last-child a::attr(href), "
+                "a:contains('Siguiente')::attr(href), a:contains('»')::attr(href)"
             ).get()
 
             if next_link:
@@ -154,7 +149,7 @@ class DevelopiaSpider(scrapy.Spider):
                     errback=self.handle_error,
                 )
             else:
-                # Try incrementing page number
+                # Increment page number in URL
                 next_url = re.sub(
                     r"page=\d+",
                     f"page={page + 1}",
@@ -182,52 +177,48 @@ class DevelopiaSpider(scrapy.Spider):
             return item
 
     def parse_detail(self, response):
-        """Parse detail page for complete property data."""
+        """Parse detail page for complete property data.
+
+        Developia sites use basic HTML: h2 for title, h3 for price,
+        ul>li for features with values in <strong>, and images in <a><img>.
+        """
         item_data = response.meta["item_data"]
         item = PropertyItem()
         for k, v in item_data.items():
             item[k] = v
 
-        # Title
-        title = response.css("h1::text, h2::text, .property-title::text").get("").strip()
+        # Title — h1 or h2
+        title = response.css("h1::text, h2::text").get("").strip()
         if title:
             item["title"] = title
 
-        # Price
-        price_text = response.css(
-            ".price::text, .precio::text, .property-price::text, "
-            "h3.price::text, .detail-price::text"
-        ).get("").strip()
-        if price_text:
-            price, currency = self._parse_price(price_text)
-            if price:
-                item["price"] = price
-                item["currency"] = currency
+        # Price — look in h3, h4, strong, or any text matching price pattern
+        for selector in ["h3::text", "h4::text", "strong::text", ".precio::text", ".price::text"]:
+            for text in response.css(selector).getall():
+                text = text.strip()
+                if re.search(r"(?:USD|U\$S|\$)\s*[\d.,]+", text) or "precio" in text.lower():
+                    price, currency = self._parse_price(text)
+                    if price:
+                        item["price"] = price
+                        item["currency"] = currency
+                        break
+            if item.get("price"):
+                break
 
-        # Address
-        address = response.css(
-            ".address::text, .ubicacion::text, .property-address::text, "
-            ".location::text, .direccion::text"
-        ).get("").strip()
-        if address:
-            item["address"] = address
-
-        # Description
-        desc_parts = response.css(
-            ".description *::text, .descripcion *::text, "
-            ".property-description *::text, .detail-description *::text"
-        ).getall()
-        desc = " ".join(t.strip() for t in desc_parts if t.strip())
+        # Description — paragraphs in main content
+        desc_parts = response.css("p::text").getall()
+        desc = " ".join(t.strip() for t in desc_parts if t.strip() and len(t.strip()) > 20)
         if desc:
             item["description"] = desc
 
-        # Features
-        for feat in response.css(
-            ".features li, .caracteristicas li, "
-            ".property-features li, .specs li, .datos li"
-        ):
-            text = feat.css("::text").get("").strip().lower()
-            num_match = re.search(r"[\d.,]+", text)
+        # Features — ul > li with values in <strong> or plain text
+        for feat in response.css("ul li"):
+            all_text = " ".join(feat.css("::text").getall()).strip().lower()
+            # Try to get numeric value from <strong> or from text
+            val_text = feat.css("strong::text").get("")
+            if not val_text:
+                val_text = all_text
+            num_match = re.search(r"[\d.,]+", val_text)
             if not num_match:
                 continue
             val_str = num_match.group().replace(".", "").replace(",", ".")
@@ -236,39 +227,52 @@ class DevelopiaSpider(scrapy.Spider):
             except ValueError:
                 continue
 
-            if "m²" in text or "m2" in text or "sup" in text:
-                if "cub" in text:
+            if "m²" in all_text or "m2" in all_text or "mts" in all_text or "cuadrado" in all_text or "sup" in all_text:
+                if "cub" in all_text:
                     item["covered_area_m2"] = val
                 else:
                     item["total_area_m2"] = val
-            elif "amb" in text:
+            elif "amb" in all_text:
                 item["rooms"] = int(val)
-            elif "dorm" in text or "hab" in text:
+            elif "dorm" in all_text or "hab" in all_text:
                 item["bedrooms"] = int(val)
-            elif "baño" in text or "bano" in text:
+            elif "baño" in all_text or "bano" in all_text:
                 item["bathrooms"] = int(val)
-            elif "coch" in text or "gar" in text:
+            elif "coch" in all_text or "gar" in all_text:
                 item["garages"] = int(val)
-            elif "antig" in text:
+            elif "antig" in all_text:
                 item["age_years"] = int(val)
+            elif "plant" in all_text:
+                pass  # floors, not tracked
 
-        # Images
+        # Images — look for property photos (inmuebles/fotos paths or gallery)
         images = response.css(
-            ".gallery img::attr(src), .carousel img::attr(src), "
-            ".slider img::attr(src), .property-gallery img::attr(src), "
-            "img[src*='storage']::attr(src), img[src*='uploads']::attr(src), "
-            "img[src*='propiedades']::attr(src)"
+            "a[href*='fotos'] img::attr(src), "
+            "a[href*='inmuebles'] img::attr(src), "
+            "img[src*='fotos']::attr(src), "
+            "img[src*='inmuebles']::attr(src), "
+            "img[src*='storage']::attr(src), "
+            "img[src*='uploads']::attr(src), "
+            ".gallery img::attr(src), "
+            ".carousel img::attr(src)"
         ).getall()
+        # Also get full-size images from links
+        full_images = response.css(
+            "a[href*='fotos']::attr(href), "
+            "a[href*='inmuebles']::attr(href)"
+        ).getall()
+        all_imgs = full_images + images
         detail_images = [
-            img for img in dict.fromkeys(images)
+            img for img in dict.fromkeys(all_imgs)
             if img and "logo" not in img and "placeholder" not in img
+            and ("fotos" in img or "inmuebles" in img or "storage" in img or "uploads" in img)
         ]
-        if len(detail_images) > len(item.get("image_urls", [])):
+        if detail_images:
             item["image_urls"] = detail_images
 
-        # Coordinates
-        lat_match = re.search(r"lat[itude]*['\"]?\s*[:=]\s*(-?[\d.]+)", response.text)
-        lng_match = re.search(r"lng|lon[gitude]*['\"]?\s*[:=]\s*(-?[\d.]+)", response.text)
+        # Coordinates — from JS (Google Maps locationpicker or similar)
+        lat_match = re.search(r"lat(?:itude)?['\"]?\s*[:=]\s*(-?\d+\.\d+)", response.text)
+        lng_match = re.search(r"(?:lng|lon(?:gitude)?)['\"]?\s*[:=]\s*(-?\d+\.\d+)", response.text)
         if lat_match and lng_match:
             try:
                 item["latitude"] = float(lat_match.group(1))

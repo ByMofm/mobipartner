@@ -122,20 +122,24 @@ class InmoClickSpider(scrapy.Spider):
 
             item = self._build_item_from_json(prop, listing_type, source_id)
 
-            # Visit detail page only for new listings
-            if source_id not in known_ids:
-                detail_url = self._build_detail_url(prop)
-                if detail_url:
-                    yield scrapy.Request(
-                        detail_url,
-                        meta={"item_data": dict(item), "source_id": source_id},
-                        callback=self.parse_detail,
-                        errback=self._detail_error,
-                        dont_filter=True,
-                    )
-                    continue
+            if source_id in known_ids:
+                # Already known — yield updated data from JSON
+                yield item
+                continue
 
+            # New listing — always yield the item from JSON first (guarantees data),
+            # then optionally request detail page for enrichment (description, images)
             yield item
+
+            detail_url = self._build_detail_url(prop)
+            if detail_url:
+                yield scrapy.Request(
+                    detail_url,
+                    meta={"item_data": dict(item), "source_id": source_id},
+                    callback=self.parse_detail,
+                    errback=self._detail_error,
+                    dont_filter=True,
+                )
 
     def _build_item_from_json(self, prop, listing_type, source_id):
         """Build a PropertyItem from the embedded JSON object."""

@@ -64,6 +64,16 @@ class ArgenpropSpider(scrapy.Spider):
     def handle_error(self, failure):
         self.logger.error(f"Request failed: {failure.request.url} — {failure.value}")
 
+    def _detail_error(self, failure):
+        """Yield card-level data when detail page fails (e.g. HTTP 405)."""
+        self.logger.warning(f"Detail failed, using card data: {failure.request.url} — {failure.value}")
+        card_item = failure.request.meta.get("card_item")
+        if card_item:
+            item = PropertyItem()
+            for k, v in card_item.items():
+                item[k] = v
+            return item
+
     def parse_listing_page(self, response):
         cards = response.css(".listing__item")
 
@@ -83,20 +93,61 @@ class ArgenpropSpider(scrapy.Spider):
 
         known_ids = getattr(self, "known_source_ids", set())
 
-        for link in links:
-            # Check if we already have this listing
-            id_match = re.search(r"--(\d+)$", link.rstrip("/"))
+        for card in cards:
+            href = card.css("a.card::attr(href)").get()
+            if not href:
+                continue
+
+            id_match = re.search(r"--(\d+)$", href.rstrip("/"))
             source_id = id_match.group(1) if id_match else None
             if source_id and source_id in known_ids:
                 continue
 
+            # Extract card-level data as fallback when detail pages fail
+            card_item = PropertyItem()
+            card_item["source"] = "argenprop"
+            card_item["source_url"] = response.urljoin(href)
+            card_item["source_id"] = source_id or href.rstrip("/").split("/")[-1]
+            card_item["property_type"] = response.meta["property_type"]
+            card_item["listing_type"] = response.meta["listing_type"]
+            card_item["title"] = card.css(
+                ".card__title::text, .card__address::text, h2::text"
+            ).get("").strip()
+            card_item["address"] = card.css(
+                ".card__address::text, .card__location::text"
+            ).get("").strip()
+            price_text = card.css(
+                ".card__price::text, .card__main-price::text"
+            ).get("")
+            card_item["price"], card_item["currency"] = self._parse_price(price_text)
+
+            # Card features (m2, rooms, etc)
+            card_features = " ".join(card.css(
+                ".card__main-features li::text, .card__features li::text"
+            ).getall())
+            card_item["total_area_m2"] = self._extract_number_from_text(card_features, r"([\d.,]+)\s*m")
+            card_item["rooms"] = self._extract_int_from_text(card_features, r"(\d+)\s*amb")
+            card_item["bedrooms"] = self._extract_int_from_text(card_features, r"(\d+)\s*dorm")
+            card_item["bathrooms"] = self._extract_int_from_text(card_features, r"(\d+)\s*ba[ñn]")
+            card_item["garages"] = None
+            card_item["covered_area_m2"] = None
+            card_item["age_years"] = None
+
+            # Card image
+            card_img = card.css("img::attr(src), img::attr(data-src)").get("")
+            card_item["image_urls"] = [card_img] if card_img and "placeholder" not in card_img else []
+            card_item["latitude"] = None
+            card_item["longitude"] = None
+            card_item["description"] = ""
+            card_item["apto_credito"] = False
+            card_item["raw_data"] = {"url": card_item["source_url"]}
+
             yield response.follow(
-                link,
+                href,
                 meta={
                     "playwright": True,
                     "playwright_page_methods": [
                         PageMethod("wait_for_selector", "h1", timeout=15000),
-                        # Scroll to trigger lazy-load of images
                         PageMethod("evaluate", "window.scrollBy(0, 300)"),
                         PageMethod("wait_for_timeout", 600),
                         PageMethod("evaluate", "window.scrollBy(0, 300)"),
@@ -118,9 +169,10 @@ class ArgenpropSpider(scrapy.Spider):
                     ],
                     "property_type": response.meta["property_type"],
                     "listing_type": response.meta["listing_type"],
+                    "card_item": dict(card_item),
                 },
                 callback=self.parse_detail,
-                errback=self.handle_error,
+                errback=self._detail_error,
             )
 
         # Pagination: a[rel=next] → href like /departamentos/venta/tucuman?pagina-2
@@ -297,4 +349,24 @@ class ArgenpropSpider(scrapy.Spider):
                     m = re.search(r"\d+", v)
                     if m:
                         return int(m.group())
+        return None
+
+    @staticmethod
+    def _extract_number_from_text(text: str, pattern: str) -> "float | None":
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            try:
+                return float(m.group(1).replace(".", "").replace(",", "."))
+            except ValueError:
+                pass
+        return None
+
+    @staticmethod
+    def _extract_int_from_text(text: str, pattern: str) -> "int | None":
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                pass
         return None

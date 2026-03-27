@@ -267,9 +267,9 @@ def deduplicate_listing(db: Session, listing: PropertyListing) -> Property:
 def run_dedup_pass(db: Session, max_merges: int = 500) -> dict:
     """Run deduplication across all active properties.
 
-    Two-phase approach to avoid Supabase statement timeouts:
-    1. Read-only phase: normalize addresses and collect merge pairs (no writes).
-    2. Write phase: execute each merge in an isolated fresh session.
+    Uses a single SQL self-join per (property_type, listing_type) group to find
+    candidate pairs with address similarity > 0.3 in one query, avoiding O(n²)
+    individual similarity calls that caused timeouts.
 
     price_history.property_id is NOT updated here — it's a denormalized
     shortcut; the authoritative link is property_listing_id which IS updated.
@@ -287,86 +287,101 @@ def run_dedup_pass(db: Session, max_merges: int = 500) -> dict:
     if to_normalize:
         db.commit()
 
-    # --- Phase 1b: collect merge pairs (read-only, no writes) ---
+    # --- Phase 1b: find candidate pairs via SQL self-join (single query per group) ---
+    from app.models.enums import PropertyType as PTEnum, ListingType as LTEnum
+
+    groups = db.execute(text(
+        "SELECT DISTINCT property_type, listing_type FROM properties "
+        "WHERE is_active = true AND address_normalized IS NOT NULL"
+    )).fetchall()
+
+    # Build property lookup for scoring (load all active properties once)
     all_properties = (
         db.query(Property)
         .filter(Property.is_active == True, Property.address_normalized.isnot(None))
-        .order_by(Property.id)
         .all()
     )
+    prop_map = {p.id: p for p in all_properties}
+    stats["checked"] = len(all_properties)
 
-    groups: dict[tuple, list] = {}
-    for prop in all_properties:
-        key = (prop.property_type, prop.listing_type)
-        groups.setdefault(key, []).append(prop)
-
-    # Collect (keep_id, discard_id) pairs to merge
     merge_pairs: list[tuple[int, int]] = []
     discarded: set[int] = set()
 
-    for (ptype, ltype), props in groups.items():
+    for row in groups:
         if len(merge_pairs) >= max_merges:
             break
-        for i, prop in enumerate(props):
-            if prop.id in discarded:
+
+        ptype, ltype = row[0], row[1]
+
+        # Single SQL query finds all pairs with address similarity > 0.3
+        # This replaces thousands of individual SELECT similarity() calls
+        candidates = db.execute(text("""
+            SELECT a.id AS id_a, b.id AS id_b,
+                   similarity(a.address_normalized, b.address_normalized) AS addr_sim
+            FROM properties a
+            JOIN properties b ON a.id < b.id
+            WHERE a.property_type = :ptype AND b.property_type = :ptype
+              AND a.listing_type = :ltype AND b.listing_type = :ltype
+              AND a.is_active = true AND b.is_active = true
+              AND a.address_normalized IS NOT NULL AND b.address_normalized IS NOT NULL
+              AND similarity(a.address_normalized, b.address_normalized) > 0.3
+            ORDER BY addr_sim DESC
+            LIMIT :lim
+        """), {"ptype": ptype, "ltype": ltype, "lim": max_merges * 3}).fetchall()
+
+        logger.info(f"Dedup: group ({ptype}, {ltype}): {len(candidates)} candidate pairs")
+
+        for id_a, id_b, addr_sim in candidates:
+            if len(merge_pairs) >= max_merges:
+                break
+            if id_a in discarded or id_b in discarded:
                 continue
-            stats["checked"] += 1
 
-            for other in props[i + 1:]:
-                if other.id in discarded:
-                    continue
-                if len(merge_pairs) >= max_merges:
-                    break
+            prop_a = prop_map.get(id_a)
+            prop_b = prop_map.get(id_b)
+            if not prop_a or not prop_b:
+                continue
 
-                # Quick area filter
-                if prop.total_area_m2 and other.total_area_m2:
-                    ratio = min(prop.total_area_m2, other.total_area_m2) / max(
-                        prop.total_area_m2, other.total_area_m2
-                    )
-                    if ratio < 0.7:
-                        continue
-
-                addr_sim = 0.0
-                if prop.address_normalized and other.address_normalized:
-                    addr_sim = db.execute(
-                        text("SELECT similarity(:a, :b)"),
-                        {"a": prop.address_normalized, "b": other.address_normalized},
-                    ).scalar() or 0.0
-
-                score = (
-                    WEIGHT_ADDRESS * addr_sim
-                    + WEIGHT_AREA * compute_area_similarity(prop.total_area_m2, other.total_area_m2)
-                    + WEIGHT_ROOMS * compute_rooms_similarity(prop.rooms, other.rooms)
-                    + WEIGHT_PRICE * compute_price_similarity(prop.current_price, other.current_price)
-                    + WEIGHT_DISTANCE * compute_distance_similarity(
-                        prop.latitude, prop.longitude, other.latitude, other.longitude
-                    )
+            # Quick area filter
+            if prop_a.total_area_m2 and prop_b.total_area_m2:
+                ratio = min(prop_a.total_area_m2, prop_b.total_area_m2) / max(
+                    prop_a.total_area_m2, prop_b.total_area_m2
                 )
+                if ratio < 0.7:
+                    continue
 
-                if score >= MERGE_THRESHOLD:
-                    merge_pairs.append((prop.id, other.id))
-                    discarded.add(other.id)
-                    logger.info(f"Dedup: will merge {other.id} -> {prop.id} (score={score:.2f})")
+            score = (
+                WEIGHT_ADDRESS * addr_sim
+                + WEIGHT_AREA * compute_area_similarity(prop_a.total_area_m2, prop_b.total_area_m2)
+                + WEIGHT_ROOMS * compute_rooms_similarity(prop_a.rooms, prop_b.rooms)
+                + WEIGHT_PRICE * compute_price_similarity(prop_a.current_price, prop_b.current_price)
+                + WEIGHT_DISTANCE * compute_distance_similarity(
+                    prop_a.latitude, prop_a.longitude, prop_b.latitude, prop_b.longitude
+                )
+            )
+
+            if score >= MERGE_THRESHOLD:
+                # Keep the older property (lower id), discard the newer one
+                merge_pairs.append((id_a, id_b))
+                discarded.add(id_b)
+                logger.info(f"Dedup: will merge {id_b} -> {id_a} (score={score:.2f})")
 
     logger.info(f"Dedup: {stats['checked']} checked, {len(merge_pairs)} pairs to merge")
 
-    # --- Phase 2: execute each merge in its own isolated session ---
+    # --- Phase 2: execute merges in batches ---
     for keep_id, discard_id in merge_pairs:
         merge_db = SessionLocal()
         try:
-            # Reassign listings from discard -> keep
             merge_db.query(PropertyListing).filter(
                 PropertyListing.property_id == discard_id
             ).update({"property_id": keep_id}, synchronize_session=False)
 
-            # Deactivate the duplicate property
             merge_db.query(Property).filter(
                 Property.id == discard_id
             ).update({"is_active": False}, synchronize_session=False)
 
             merge_db.commit()
             stats["merged"] += 1
-            logger.info(f"Dedup: merged {discard_id} -> {keep_id}")
         except Exception as e:
             merge_db.rollback()
             stats["failed"] += 1

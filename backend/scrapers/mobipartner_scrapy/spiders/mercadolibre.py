@@ -57,7 +57,12 @@ class MercadoLibreSpider(scrapy.Spider):
                 meta={
                     "playwright": True,
                     "playwright_page_methods": [
-                        PageMethod("wait_for_selector", ".poly-card", timeout=20000),
+                        PageMethod("wait_for_load_state", "networkidle"),
+                        # ML frequently changes card classes — try multiple selectors
+                        PageMethod("wait_for_selector",
+                                   ".poly-card, .ui-search-layout__item, .ui-search-result, "
+                                   "[data-testid='result-item'], .andes-card",
+                                   timeout=30000),
                     ],
                     "property_type": prop_type,
                     "listing_type": listing_type,
@@ -71,7 +76,17 @@ class MercadoLibreSpider(scrapy.Spider):
         self.logger.error(f"Request failed: {failure.request.url} — {failure.value}")
 
     def parse_listing_page(self, response):
+        # Try multiple selectors — ML frequently changes class names
         links = response.css("a.poly-component__title::attr(href)").getall()
+        if not links:
+            links = response.css(
+                ".ui-search-result a.ui-search-link::attr(href), "
+                ".ui-search-layout__item a::attr(href), "
+                "[data-testid='result-item'] a::attr(href), "
+                ".andes-card a::attr(href)"
+            ).getall()
+        # Filter to only property detail links (MLA IDs)
+        links = [l for l in links if "MLA" in l or "inmuebles.mercadolibre" in l]
         links = list(dict.fromkeys(links))  # deduplicate preserving order
 
         self.logger.info(
@@ -133,7 +148,6 @@ class MercadoLibreSpider(scrapy.Spider):
         page = response.meta["page"]
         if page < self.MAX_PAGES and links:
             offset = page * 48
-            # Build next URL: base_url_without_query + _Desde_{offset+1}
             base = re.sub(r"_Desde_\d+", "", response.url).rstrip("/")
             next_url = f"{base}_Desde_{offset + 1}"
             yield scrapy.Request(
@@ -141,7 +155,11 @@ class MercadoLibreSpider(scrapy.Spider):
                 meta={
                     "playwright": True,
                     "playwright_page_methods": [
-                        PageMethod("wait_for_selector", ".poly-card", timeout=20000),
+                        PageMethod("wait_for_load_state", "networkidle"),
+                        PageMethod("wait_for_selector",
+                                   ".poly-card, .ui-search-layout__item, .ui-search-result, "
+                                   "[data-testid='result-item'], .andes-card",
+                                   timeout=30000),
                     ],
                     "property_type": response.meta["property_type"],
                     "listing_type": response.meta["listing_type"],

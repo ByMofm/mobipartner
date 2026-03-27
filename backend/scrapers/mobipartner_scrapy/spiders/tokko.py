@@ -55,7 +55,8 @@ class TokkoSpider(scrapy.Spider):
                     "playwright": True,
                     "playwright_context": f"tokko-{self.name}-{tipo}-{operacion}",
                     "playwright_page_methods": [
-                        PageMethod("wait_for_selector", ".resultados-list li, .property-list li, .prop-list li", timeout=15000),
+                        PageMethod("wait_for_load_state", "networkidle"),
+                        PageMethod("wait_for_selector", ".resultados-list li, .property-list li, .prop-list li", timeout=30000),
                     ],
                     "property_type": prop_type,
                     "listing_type": listing_type,
@@ -102,7 +103,7 @@ class TokkoSpider(scrapy.Spider):
                         "playwright": True,
                         "playwright_context": f"tokko-detail-{source_id}",
                         "playwright_page_methods": [
-                            PageMethod("wait_for_selector", "h1, h2, .description, .prop-description", timeout=15000),
+                            PageMethod("wait_for_selector", "h1, h2, .description, .prop-description", timeout=30000),
                         ],
                         "item_data": dict(item),
                     },
@@ -128,7 +129,7 @@ class TokkoSpider(scrapy.Spider):
                         "playwright": True,
                         "playwright_context": f"tokko-{self.name}-p{page+1}",
                         "playwright_page_methods": [
-                            PageMethod("wait_for_selector", ".resultados-list li, .property-list li, .prop-list li", timeout=15000),
+                            PageMethod("wait_for_selector", ".resultados-list li, .property-list li, .prop-list li", timeout=30000),
                         ],
                         "property_type": response.meta["property_type"],
                         "listing_type": response.meta["listing_type"],
@@ -146,7 +147,7 @@ class TokkoSpider(scrapy.Spider):
                         "playwright": True,
                         "playwright_context": f"tokko-{self.name}-p{page+1}",
                         "playwright_page_methods": [
-                            PageMethod("wait_for_selector", ".resultados-list li, .property-list li, .prop-list li", timeout=15000),
+                            PageMethod("wait_for_selector", ".resultados-list li, .property-list li, .prop-list li", timeout=30000),
                         ],
                         "property_type": response.meta["property_type"],
                         "listing_type": response.meta["listing_type"],
